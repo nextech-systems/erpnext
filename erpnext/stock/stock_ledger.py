@@ -489,32 +489,19 @@ class update_entries_after:
 			self.distinct_item_warehouses[key] = val
 			self.new_items_found = True
 		else:
-			# Check if the dependent voucher is reposted
-			# If not, then do not add it to the list
-			if not self.is_dependent_voucher_reposted(dependant_sle):
-				return
-
-			existing_sle_posting_date = self.distinct_item_warehouses[key].get("sle", {}).get("posting_date")
-
-			dependent_voucher_detail_nos = self.get_dependent_voucher_detail_nos(key)
-			if getdate(dependant_sle.posting_date) < getdate(existing_sle_posting_date):
-				if dependent_voucher_detail_nos and dependant_sle.voucher_detail_no in set(
-					dependent_voucher_detail_nos
-				):
+			existing_sle = self.distinct_item_warehouses[key].get("sle", {})
+			if getdate(existing_sle.get("posting_date")) > getdate(dependant_sle.posting_date):
+				self.distinct_item_warehouses[key] = val
+				self.new_items_found = True
+			elif dependant_sle.voucher_type == "Stock Entry" and is_transfer_stock_entry(
+				dependant_sle.voucher_no
+			):
+				if self.distinct_item_warehouses[key].get("transfer_entry_to_repost"):
 					return
 
-				val.sle_changed = True
-				dependent_voucher_detail_nos.append(dependant_sle.voucher_detail_no)
-				val.dependent_voucher_detail_nos = dependent_voucher_detail_nos
+				val["transfer_entry_to_repost"] = True
 				self.distinct_item_warehouses[key] = val
 				self.new_items_found = True
-			elif dependant_sle.voucher_detail_no not in set(dependent_voucher_detail_nos):
-				# Future dependent voucher needs to be repost to get the correct stock value
-				# If dependent voucher has not reposted, then add it to the list
-				dependent_voucher_detail_nos.append(dependant_sle.voucher_detail_no)
-				self.new_items_found = True
-				val.dependent_voucher_detail_nos = dependent_voucher_detail_nos
-				self.distinct_item_warehouses[key] = val
 
 	def is_dependent_voucher_reposted(self, dependant_sle) -> bool:
 		# Return False if the dependent voucher is not reposted
@@ -728,7 +715,11 @@ class update_entries_after:
 		diff = self.wh_data.qty_after_transaction + flt(sle.actual_qty)
 		diff = flt(diff, self.flt_precision)  # respect system precision
 
-		if diff < 0 and abs(diff) > 0.0001:
+		diff_threshold = 0.0001
+		if self.flt_precision > 4:
+			diff_threshold = 10 ** (-1 * self.flt_precision)
+
+		if diff < 0 and abs(diff) > diff_threshold:
 			# negative stock!
 			exc = sle.copy().update({"diff": diff})
 			self.exceptions.setdefault(sle.warehouse, []).append(exc)
@@ -1000,7 +991,7 @@ class update_entries_after:
 				# else it remains the same as that of previous entry
 				self.wh_data.valuation_rate = new_stock_value / new_stock_qty
 
-		if not self.wh_data.valuation_rate and sle.voucher_detail_no:
+		if self.wh_data.valuation_rate is None and sle.voucher_detail_no:
 			allow_zero_rate = self.check_if_allow_zero_valuation_rate(sle.voucher_type, sle.voucher_detail_no)
 			if not allow_zero_rate:
 				self.wh_data.valuation_rate = self.get_fallback_rate(sle)
@@ -1403,6 +1394,8 @@ def get_sle_by_voucher_detail_no(voucher_detail_no, excluded_sle=None):
 			"posting_time",
 			"voucher_detail_no",
 			"posting_datetime as timestamp",
+			"voucher_type",
+			"voucher_no",
 		],
 		as_dict=1,
 	)
@@ -1830,3 +1823,10 @@ def get_stock_value_difference(item_code, warehouse, posting_date, posting_time,
 
 	difference_amount = query.run()
 	return flt(difference_amount[0][0]) if difference_amount else 0
+
+
+@frappe.request_cache
+def is_transfer_stock_entry(voucher_no):
+	purpose = frappe.get_cached_value("Stock Entry", voucher_no, "purpose")
+
+	return purpose in ["Material Transfer", "Material Transfer for Manufacture", "Send to Subcontractor"]

@@ -45,6 +45,7 @@ def get_result(filters, tds_docs, tds_accounts, tax_category_map, journal_entry_
 	gle_map = get_gle_map(tds_docs)
 
 	out = []
+	entries = {}
 	for name, details in gle_map.items():
 		for entry in details:
 			tax_amount, total_amount, grand_total, base_total = 0, 0, 0, 0
@@ -105,8 +106,8 @@ def get_result(filters, tds_docs, tds_accounts, tax_category_map, journal_entry_
 
 				row.update(
 					{
-						"section_code": tax_withholding_category or "",
-						"entity_type": party_map.get(party, {}).get(party_type),
+						"tax_withholding_category": tax_withholding_category or "",
+						"party_entity_type": party_map.get(party, {}).get(party_type),
 						"rate": rate,
 						"total_amount": total_amount,
 						"grand_total": grand_total,
@@ -119,9 +120,14 @@ def get_result(filters, tds_docs, tds_accounts, tax_category_map, journal_entry_
 						"supplier_invoice_date": bill_date,
 					}
 				)
-				out.append(row)
 
-	out.sort(key=lambda x: (x["section_code"], x["transaction_date"]))
+				key = entry.voucher_no
+				if key in entries:
+					entries[key]["tax_amount"] += tax_amount
+				else:
+					entries[key] = row
+	out = list(entries.values())
+	out.sort(key=lambda x: (x["tax_withholding_category"], x["transaction_date"], x["ref_no"]))
 
 	return out
 
@@ -171,9 +177,9 @@ def get_columns(filters):
 	pan = "pan" if frappe.db.has_column(filters.party_type, "pan") else "tax_id"
 	columns = [
 		{
-			"label": _("Section Code"),
+			"label": _("Tax Withholding Category"),
 			"options": "Tax Withholding Category",
-			"fieldname": "section_code",
+			"fieldname": "tax_withholding_category",
 			"fieldtype": "Link",
 			"width": 90,
 		},
@@ -202,7 +208,12 @@ def get_columns(filters):
 
 	columns.extend(
 		[
-			{"label": _("Entity Type"), "fieldname": "entity_type", "fieldtype": "Data", "width": 100},
+			{
+				"label": _("{0} Type").format(_(filters.get("party_type", "Party"))),
+				"fieldname": "party_entity_type",
+				"fieldtype": "Data",
+				"width": 100,
+			},
 		]
 	)
 	if filters.party_type == "Supplier":
